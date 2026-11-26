@@ -33,7 +33,7 @@
   .panel.wide { grid-column: 1 / -1; }
   .panel h2 { margin: 0; font-size: 15px; font-weight: 500; }
   .panel .note { color: var(--sub); font-size: 12px; margin: 0 0 6px; }
-  .now { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 8px; font-variant-numeric: tabular-nums; }
+  .now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 4px 0 8px; font-variant-numeric: tabular-nums; }
   .now b { font-size: 28px; font-weight: 700; }
   .now span { font-size: 14px; }
   .up { color: var(--up); } .down { color: var(--down); }
@@ -73,18 +73,18 @@
       <div class="chart"><canvas id="c-margin"></canvas></div>
     </section>
     <section class="panel">
-      <h2>恐慌指數 VIX</h2>
-      <p class="note">虛線為 20（警戒）與 30（恐慌）</p>
-      <div class="now" id="now-vix"></div>
-      <div class="chart"><canvas id="c-vix"></canvas></div>
-    </section>
-    <section class="panel">
       <h2>美元兌台幣</h2>
       <p class="note">數字上升＝台幣貶值，下降＝台幣升值</p>
       <div class="now" id="now-fx"></div>
       <div class="chart"><canvas id="c-fx"></canvas></div>
     </section>
-    <section class="panel">
+    <section class="panel wide">
+      <h2>恐慌指數：美股 VIX 與台指 VIXTWN</h2>
+      <p class="note">虛線為 20（警戒）與 30（恐慌）。兩者交易日不同，缺的日期以線連接</p>
+      <div class="now" id="now-vix"></div>
+      <div class="chart"><canvas id="c-vix"></canvas></div>
+    </section>
+    <section class="panel wide">
       <h2>原油價格</h2>
       <p class="note">單位：美元／桶，WTI 與布蘭特</p>
       <div class="now" id="now-oil"></div>
@@ -101,16 +101,17 @@ const cutoff = () => new Date(Date.now() - RANGE * 864e5).toISOString().slice(0,
 const recent = arr => arr.filter(([d]) => d >= cutoff());
 const fromObj = (o, f) => Object.keys(o).sort().map(d => [d, f ? f(o[d]) : o[d]]);
 
-function nowLine(id, series, digits = 2, unit = "") {
+function nowLine(id, series, digits = 2, unit = "", append = false) {
   const el = document.getElementById(id);
-  if (series.length < 1) { el.textContent = "尚無資料"; return; }
+  if (series.length < 1) { if (!append) el.textContent = "尚無資料"; return; }
   const [d, v] = series[series.length - 1];
   const prev = series.length > 1 ? series[series.length - 2][1] : v;
   const diff = v - prev, pct = prev ? diff / prev * 100 : 0;
   const cls = diff > 0 ? "up" : diff < 0 ? "down" : "";
-  el.innerHTML = `<b>${v.toLocaleString(undefined, {maximumFractionDigits: digits})}${unit}</b>` +
+  const html = `<b>${v.toLocaleString(undefined, {maximumFractionDigits: digits})}${unit}</b>` +
     `<span class="${cls}">${diff > 0 ? "▲" : diff < 0 ? "▼" : ""} ${Math.abs(diff).toFixed(digits)} (${pct.toFixed(2)}%)</span>` +
     `<span class="meta">${d}</span>`;
+  el.innerHTML = append ? el.innerHTML + html : html;
 }
 
 function baseOpts(extra = {}) {
@@ -159,12 +160,21 @@ function render() {
   draw("c-margin", { type: "line", data: { labels: margin.map(s => s[0]),
     datasets: [line("融資餘額", margin, lineC, { fill: false })] }, options: baseOpts() });
 
-  // VIX
+  // VIX（美股 + 台指）
   const vix = recent(DATA.vix || []);
-  nowLine("now-vix", vix, 2);
-  const flat = v => ({ data: vix.map(() => v), borderColor: sub, borderDash: [5, 4], borderWidth: 1, pointRadius: 0 });
-  draw("c-vix", { type: "line", data: { labels: vix.map(s => s[0]),
-    datasets: [line("VIX", vix, up), flat(20), flat(30)] }, options: baseOpts() });
+  const vtw = recent(fromObj(DATA.vixtwn || {}));
+  nowLine("now-vix", vix, 2, " 美股VIX");
+  nowLine("now-vix", vtw, 2, " 台指VIXTWN", true);
+  const vlabels = [...new Set([...vix, ...vtw].map(s => s[0]))].sort();
+  const align = s => { const m = new Map(s); return vlabels.map(d => m.has(d) ? m.get(d) : null); };
+  const flat = v => ({ data: vlabels.map(() => v), borderColor: sub, borderDash: [5, 4], borderWidth: 1, pointRadius: 0 });
+  const vo = baseOpts({ plugins: { legend: { display: true, labels: { color: sub, boxWidth: 12,
+    filter: item => item.datasetIndex < 2 } } } });
+  draw("c-vix", { type: "line", data: { labels: vlabels, datasets: [
+    { label: "美股 VIX", data: align(vix), borderColor: up, backgroundColor: up, borderWidth: 2, pointRadius: 0, tension: .15, spanGaps: true },
+    { label: "台指 VIXTWN", data: align(vtw), borderColor: "#d99a2b", backgroundColor: "#d99a2b", borderWidth: 2, pointRadius: 0, tension: .15, spanGaps: true },
+    flat(20), flat(30)
+  ]}, options: vo });
 
   // 匯率
   const fx = recent(DATA.usdtwd || []);

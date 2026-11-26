@@ -4,10 +4,14 @@
 用法:  pip install requests && python fetch_data.py
 建議每天收盤後（晚上 9:30 之後，融資資料才會更新）執行一次。
 """
+import io
 import json
+import re
 import time
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urljoin
 
 import requests
 
@@ -91,10 +95,60 @@ def fetch_margin(day):
     return None
 
 
+# ---------- 期交所：臺指選擇權波動率指數 VIXTWN ----------
+VIX_PAGE = "https://www.taifex.com.tw/cht/7/vixDaily3MNew"
+# 檔案格式：日期  時間  收盤指數  收盤前1分鐘平均
+VIX_LINE = re.compile(r"^\s*(\d{8})\s+\d+\s+([\d.]+)\s+([\d.]+)")
+
+
+def decode_text(raw):
+    if raw[:2] == b"PK":  # zip 檔
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            raw = b"\n".join(z.read(n) for n in z.namelist())
+    for enc in ("utf-8-sig", "big5", "cp950"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
+def fetch_vixtwn():
+    """從期交所頁面找出下載連結，下載檔案並解析每日收盤指數。"""
+    html = requests.get(VIX_PAGE, headers=UA, timeout=30).text
+    found = re.findall(r"""["'(]([^"'()\s]*(?:/file/|download|\.txt|\.csv|\.zip)[^"'()\s]*)""", html, re.I)
+    links = []
+    for l in found:
+        if re.search(r"\.(css|js|png|jpg|gif|ico|pdf|ods)(\?|$)", l, re.I):
+            continue
+        u = urljoin(VIX_PAGE, l)
+        if u not in links:
+            links.append(u)
+    print(f"     VIXTWN 找到 {len(links)} 個候選連結")
+    out = {}
+    for u in links[:20]:
+        try:
+            r = requests.get(u, headers=UA, timeout=30)
+            if r.status_code != 200 or b"<html" in r.content[:500].lower():
+                continue
+            for line in decode_text(r.content).splitlines():
+                m = VIX_LINE.match(line)
+                if m:
+                    d = m.group(1)
+                    out[f"{d[:4]}-{d[4:6]}-{d[6:]}"] = float(m.group(2))
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"     略過 {u}: {e}")
+    if not out:
+        print("     連結清單（供除錯）:", links[:10])
+    return out
+
+
 def main():
     data = json.loads(OUT.read_text("utf-8")) if OUT.exists() else {}
     data.setdefault("institutional", {})
     data.setdefault("margin", {})
+    data.setdefault("vixtwn", {})
 
     # 全球資料：每次整段覆蓋
     for key, sym in [("wti", "CL=F"), ("brent", "BZ=F"), ("usdtwd", "TWD=X"), ("vix", "^VIX")]:
@@ -103,6 +157,14 @@ def main():
             print(f"OK   {key}: {len(data[key])} 筆")
         except Exception as e:
             print(f"FAIL {key}: {e}")
+
+    # 台指 VIX：每次合併進既有資料
+    try:
+        v = fetch_vixtwn()
+        data["vixtwn"].update(v)
+        print(f"{'OK  ' if v else 'FAIL'} vixtwn: 本次取得 {len(v)} 筆，累計 {len(data['vixtwn'])} 筆")
+    except Exception as e:
+        print(f"FAIL vixtwn: {e}")
 
     # 台股資料：只補缺的日期
     today = datetime.now(TW).date()
