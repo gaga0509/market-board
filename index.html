@@ -39,6 +39,18 @@
   .up { color: var(--up); } .down { color: var(--down); }
   .chart { position: relative; height: 230px; }
   .wide .chart { height: 280px; }
+  .tbl-wrap { max-height: 440px; overflow: auto; border: 1px solid var(--rule); border-radius: 6px; }
+  table.detail { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 14px; }
+  .detail th, .detail td { padding: 7px 14px; text-align: right; white-space: nowrap; }
+  .detail th:first-child, .detail td:first-child { text-align: left; }
+  .detail thead th { position: sticky; top: 0; background: var(--panel); color: var(--sub); font-weight: 500; border-bottom: 1px solid var(--rule); }
+  .detail tbody tr { border-bottom: 1px solid var(--rule); }
+  .detail tbody tr:last-child { border-bottom: 0; }
+  .detail thead tr:nth-child(2) th { top: 37px; }
+  .detail thead th { height: 37px; }
+  .detail th.g, .detail td.g { border-left: 1px solid var(--rule); }
+  .detail thead th.c { text-align: center; }
+  .detail tr.sum td { font-weight: 700; background: var(--bg); }
   #err { display: none; background: var(--panel); border: 1px solid var(--up); border-radius: 8px; padding: 14px 18px; margin-bottom: 14px; }
   @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
 </style>
@@ -62,9 +74,9 @@
   <div class="grid">
     <section class="panel wide">
       <h2>三大法人買賣超</h2>
-      <p class="note">單位：億元，上市合計。柱為各法人，線為三大法人合計</p>
+      <p class="note">單位：億元，上市合計。買賣超為正是買超（紅）、為負是賣超（綠），最新日期在最上面</p>
       <div class="now" id="now-inst"></div>
-      <div class="chart"><canvas id="c-inst"></canvas></div>
+      <div class="tbl-wrap"><table class="detail" id="t-inst"></table></div>
     </section>
     <section class="panel">
       <h2>融資餘額</h2>
@@ -143,16 +155,17 @@ function render() {
   // 三大法人
   const inst = DATA.institutional || {};
   const dates = Object.keys(inst).sort().filter(d => d >= cutoff());
-  const pick = k => dates.map(d => inst[d][k]);
-  nowLine("now-inst", dates.map(d => [d, inst[d].total]), 2, " 億");
-  const o = baseOpts({ plugins: { legend: { display: true, labels: { color: sub, boxWidth: 12 } } } });
-  o.scales.x.stacked = true; o.scales.y.stacked = true;
-  draw("c-inst", { type: "bar", data: { labels: dates, datasets: [
-    { type: "line", label: "合計", data: pick("total"), borderColor: css("--ink"), borderWidth: 2, pointRadius: 0, order: 0 },
-    { label: "外資", data: pick("foreign"), backgroundColor: "#1f5f8b", stack: "s", order: 1 },
-    { label: "投信", data: pick("trust"), backgroundColor: "#d99a2b", stack: "s", order: 1 },
-    { label: "自營商", data: pick("dealer"), backgroundColor: "#8a94a3", stack: "s", order: 1 }
-  ]}, options: o });
+  const fmt = (v, signed) => v == null ? "—" : (signed && v > 0 ? "+" : "") + v.toFixed(2);
+  const cell = (v, signed, g) => `<td class="${g ? "g " : ""}${signed ? (v > 0 ? "up" : v < 0 ? "down" : "") : ""}">${fmt(v, signed)}</td>`;
+  const groups = ["foreign", "trust", "dealer", "total"];
+  const rowCells = get => groups.map(k => cell(get(k + "_buy"), false, true) + cell(get(k + "_sell"), false, false) + cell(get(k), true, false)).join("");
+  const sumOf = f => { const v = dates.map(d => inst[d][f]).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) : null; };
+  const body = [...dates].reverse().map(d => `<tr><td>${d}</td>${rowCells(f => inst[d][f])}</tr>`).join("");
+  const names = ["外資", "投信", "自營商", "三大法人合計"];
+  document.getElementById("t-inst").innerHTML =
+    `<thead><tr><th rowspan="2">日期</th>${names.map(n => `<th class="c g" colspan="3">${n}</th>`).join("")}</tr>` +
+    `<tr>${names.map(() => `<th class="g">買進</th><th>賣出</th><th>買賣超</th>`).join("")}</tr></thead>` +
+    `<tbody>${dates.length ? `<tr class="sum"><td>區間合計（${dates.length} 日）</td>${rowCells(sumOf)}</tr>` : ""}${body}</tbody>`;
 
   // 融資餘額
   const margin = recent(fromObj(DATA.margin || {}));

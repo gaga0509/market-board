@@ -58,22 +58,33 @@ def fetch_institutional(day):
     j = r.json()
     if j.get("stat") != "OK" or not j.get("data"):
         return None
-    foreign = trust = dealer = total = 0.0
+    g = {k: [0.0, 0.0, 0.0] for k in ("foreign", "trust", "dealer", "total")}  # 買進, 賣出, 買賣超
     for row in j["data"]:
-        name, diff = row[0], num(row[3])
-        if diff is None:
+        name = row[0]
+        vals = [num(row[1]), num(row[2]), num(row[3])]
+        if None in vals:
             continue
         if "合計" in name:
-            total = diff
+            key = "total"
         elif "外資" in name:
-            foreign += diff
+            key = "foreign"
         elif "投信" in name:
-            trust += diff
+            key = "trust"
         elif "自營商" in name:
-            dealer += diff
+            key = "dealer"
+        else:
+            continue
+        for i, v in enumerate(vals):
+            g[key][i] += v
+    if not any(g["total"]):  # 沒有合計列時自行加總
+        g["total"] = [sum(g[k][i] for k in ("foreign", "trust", "dealer")) for i in range(3)]
     to_yi = lambda v: round(v / 1e8, 2)  # 元 -> 億元
-    return {"foreign": to_yi(foreign), "trust": to_yi(trust),
-            "dealer": to_yi(dealer), "total": to_yi(total)}
+    out = {}
+    for k, (b, sl, d) in g.items():
+        out[k] = to_yi(d)            # 買賣超（沿用舊欄位名稱）
+        out[k + "_buy"] = to_yi(b)   # 買進金額
+        out[k + "_sell"] = to_yi(sl) # 賣出金額
+    return out
 
 
 # ---------- 證交所：融資餘額 ----------
@@ -174,7 +185,7 @@ def main():
             continue
         day, iso = d.strftime("%Y%m%d"), d.isoformat()
         try:
-            if iso not in data["institutional"]:
+            if "total_buy" not in data["institutional"].get(iso, {}):  # 缺買進/賣出金額的舊資料會一併回補
                 v = fetch_institutional(day)
                 time.sleep(0.8)
                 if v:
