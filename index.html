@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>每日市場看板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #e9edf2; --panel: #ffffff; --ink: #14202e; --sub: #5d6b7a; --rule: #d5dce4;
+    --line: #1f5f8b; --up: #c8372d; --down: #1f8a5b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f161e; --panel: #172230; --ink: #e6ebf1; --sub: #93a1b1; --rule: #263546;
+            --line: #5aa9dc; --up: #ef6a5f; --down: #3fc08a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.6 "Noto Sans TC", system-ui, sans-serif; }
+  main { max-width: 1120px; margin: 0 auto; padding: 28px 18px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  h1 { margin: 0; font-size: 26px; letter-spacing: .02em; }
+  .meta { color: var(--sub); font-size: 13px; }
+  .tabs { display: flex; gap: 6px; }
+  .tabs button { border: 1px solid var(--rule); background: var(--panel); color: var(--ink);
+                 padding: 5px 14px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
+  .tabs button[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+  .tabs button:focus-visible { outline: 2px solid var(--line); outline-offset: 2px; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 16px 18px 14px; min-width: 0; }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel h2 { margin: 0; font-size: 15px; font-weight: 500; }
+  .panel .note { color: var(--sub); font-size: 12px; margin: 0 0 6px; }
+  .now { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 8px; font-variant-numeric: tabular-nums; }
+  .now b { font-size: 28px; font-weight: 700; }
+  .now span { font-size: 14px; }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .chart { position: relative; height: 230px; }
+  .wide .chart { height: 280px; }
+  #err { display: none; background: var(--panel); border: 1px solid var(--up); border-radius: 8px; padding: 14px 18px; margin-bottom: 14px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>每日市場看板</h1>
+      <div class="meta">資料更新：<span id="updated">—</span>　紅漲綠跌（台股慣例）</div>
+    </div>
+    <div class="tabs" id="tabs" role="group" aria-label="時間範圍">
+      <button data-d="30" aria-pressed="false">1 個月</button>
+      <button data-d="90" aria-pressed="true">3 個月</button>
+      <button data-d="180" aria-pressed="false">6 個月</button>
+    </div>
+  </header>
+
+  <div id="err">讀不到 data.json。請先執行 <code>python fetch_data.py</code>，並用 <code>python -m http.server</code> 開啟本頁（直接雙擊 html 檔無法讀取）。</div>
+
+  <div class="grid">
+    <section class="panel wide">
+      <h2>三大法人買賣超</h2>
+      <p class="note">單位：億元，上市合計。柱為各法人，線為三大法人合計</p>
+      <div class="now" id="now-inst"></div>
+      <div class="chart"><canvas id="c-inst"></canvas></div>
+    </section>
+    <section class="panel">
+      <h2>融資餘額</h2>
+      <p class="note">單位：億元，上市</p>
+      <div class="now" id="now-margin"></div>
+      <div class="chart"><canvas id="c-margin"></canvas></div>
+    </section>
+    <section class="panel">
+      <h2>恐慌指數 VIX</h2>
+      <p class="note">虛線為 20（警戒）與 30（恐慌）</p>
+      <div class="now" id="now-vix"></div>
+      <div class="chart"><canvas id="c-vix"></canvas></div>
+    </section>
+    <section class="panel">
+      <h2>美元兌台幣</h2>
+      <p class="note">數字上升＝台幣貶值，下降＝台幣升值</p>
+      <div class="now" id="now-fx"></div>
+      <div class="chart"><canvas id="c-fx"></canvas></div>
+    </section>
+    <section class="panel">
+      <h2>原油價格</h2>
+      <p class="note">單位：美元／桶，WTI 與布蘭特</p>
+      <div class="now" id="now-oil"></div>
+      <div class="chart"><canvas id="c-oil"></canvas></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let DATA = null, RANGE = 90, charts = {};
+
+const cutoff = () => new Date(Date.now() - RANGE * 864e5).toISOString().slice(0, 10);
+const recent = arr => arr.filter(([d]) => d >= cutoff());
+const fromObj = (o, f) => Object.keys(o).sort().map(d => [d, f ? f(o[d]) : o[d]]);
+
+function nowLine(id, series, digits = 2, unit = "") {
+  const el = document.getElementById(id);
+  if (series.length < 1) { el.textContent = "尚無資料"; return; }
+  const [d, v] = series[series.length - 1];
+  const prev = series.length > 1 ? series[series.length - 2][1] : v;
+  const diff = v - prev, pct = prev ? diff / prev * 100 : 0;
+  const cls = diff > 0 ? "up" : diff < 0 ? "down" : "";
+  el.innerHTML = `<b>${v.toLocaleString(undefined, {maximumFractionDigits: digits})}${unit}</b>` +
+    `<span class="${cls}">${diff > 0 ? "▲" : diff < 0 ? "▼" : ""} ${Math.abs(diff).toFixed(digits)} (${pct.toFixed(2)}%)</span>` +
+    `<span class="meta">${d}</span>`;
+}
+
+function baseOpts(extra = {}) {
+  const grid = css("--rule"), sub = css("--sub");
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: sub, maxTicksLimit: 7, maxRotation: 0 }, grid: { display: false } },
+      y: { ticks: { color: sub }, grid: { color: grid } }
+    }, ...extra
+  };
+}
+
+function draw(id, cfg) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), cfg);
+}
+
+function line(label, series, color, extra = {}) {
+  return { label, data: series.map(s => s[1]), borderColor: color, backgroundColor: color,
+           borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: .15, ...extra };
+}
+
+function render() {
+  const up = css("--up"), down = css("--down"), lineC = css("--line"), sub = css("--sub");
+
+  // 三大法人
+  const inst = DATA.institutional || {};
+  const dates = Object.keys(inst).sort().filter(d => d >= cutoff());
+  const pick = k => dates.map(d => inst[d][k]);
+  nowLine("now-inst", dates.map(d => [d, inst[d].total]), 2, " 億");
+  const o = baseOpts({ plugins: { legend: { display: true, labels: { color: sub, boxWidth: 12 } } } });
+  o.scales.x.stacked = true; o.scales.y.stacked = true;
+  draw("c-inst", { type: "bar", data: { labels: dates, datasets: [
+    { type: "line", label: "合計", data: pick("total"), borderColor: css("--ink"), borderWidth: 2, pointRadius: 0, order: 0 },
+    { label: "外資", data: pick("foreign"), backgroundColor: "#1f5f8b", stack: "s", order: 1 },
+    { label: "投信", data: pick("trust"), backgroundColor: "#d99a2b", stack: "s", order: 1 },
+    { label: "自營商", data: pick("dealer"), backgroundColor: "#8a94a3", stack: "s", order: 1 }
+  ]}, options: o });
+
+  // 融資餘額
+  const margin = recent(fromObj(DATA.margin || {}));
+  nowLine("now-margin", margin, 1, " 億");
+  draw("c-margin", { type: "line", data: { labels: margin.map(s => s[0]),
+    datasets: [line("融資餘額", margin, lineC, { fill: false })] }, options: baseOpts() });
+
+  // VIX
+  const vix = recent(DATA.vix || []);
+  nowLine("now-vix", vix, 2);
+  const flat = v => ({ data: vix.map(() => v), borderColor: sub, borderDash: [5, 4], borderWidth: 1, pointRadius: 0 });
+  draw("c-vix", { type: "line", data: { labels: vix.map(s => s[0]),
+    datasets: [line("VIX", vix, up), flat(20), flat(30)] }, options: baseOpts() });
+
+  // 匯率
+  const fx = recent(DATA.usdtwd || []);
+  nowLine("now-fx", fx, 3);
+  const fo = baseOpts(); fo.scales.y.ticks.callback = v => v.toFixed(1);
+  draw("c-fx", { type: "line", data: { labels: fx.map(s => s[0]),
+    datasets: [line("USD/TWD", fx, lineC)] }, options: fo });
+
+  // 原油
+  const wti = recent(DATA.wti || []), brent = recent(DATA.brent || []);
+  nowLine("now-oil", wti, 2, " (WTI)");
+  const oo = baseOpts({ plugins: { legend: { display: true, labels: { color: sub, boxWidth: 12 } } } });
+  draw("c-oil", { type: "line", data: { labels: wti.map(s => s[0]),
+    datasets: [line("WTI", wti, lineC), line("布蘭特", brent, "#d99a2b")] }, options: oo });
+}
+
+document.getElementById("tabs").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  RANGE = +b.dataset.d;
+  document.querySelectorAll("#tabs button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  render();
+});
+
+fetch("data.json?_=" + Date.now())
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(j => { DATA = j; document.getElementById("updated").textContent = j.updated || "—"; render(); })
+  .catch(() => { document.getElementById("err").style.display = "block"; });
+</script>
+</body>
+</html>
